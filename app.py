@@ -927,9 +927,27 @@ def _inject_css():
     <style>
     /* ── RTL global ── */
     .stApp { direction: rtl; }
-    .stMarkdown p, .stMarkdown li, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        text-align: right;
+
+    /* Headings — Streamlit wraps them in these containers */
+    h1, h2, h3, h4, h5, h6 {
+        text-align: right !important;
+        direction: rtl !important;
     }
+    [data-testid="stHeadingWithActionElements"],
+    [data-testid="stHeading"] {
+        text-align: right !important;
+        direction: rtl !important;
+    }
+    .stMarkdown p, .stMarkdown li,
+    .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        text-align: right !important;
+        direction: rtl !important;
+    }
+    [data-testid="stMarkdownContainer"] {
+        text-align: right !important;
+        direction: rtl !important;
+    }
+
     .stTextInput input, .stTextArea textarea { direction: rtl; text-align: right; }
     [data-baseweb="select"] * { direction: rtl; }
     [data-baseweb="menu"] { direction: rtl; text-align: right; }

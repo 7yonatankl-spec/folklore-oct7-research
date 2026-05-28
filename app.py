@@ -1051,8 +1051,10 @@ def _inject_css():
     /* ── Divider ── */
     hr { border-color: #e2e8f0; margin: 1rem 0; }
 
-    /* ── Slider ── */
-    [data-testid="stSlider"] { direction: rtl; }
+    /* ── Slider — keep LTR to prevent value overflowing screen ── */
+    [data-testid="stSlider"] { direction: ltr; }
+    [data-testid="stSlider"] [data-baseweb="slider"] { direction: ltr; }
+    [data-testid="stSliderThumbValue"] { direction: ltr; }
     </style>
     """, unsafe_allow_html=True)
 

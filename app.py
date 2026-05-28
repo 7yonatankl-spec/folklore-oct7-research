@@ -84,6 +84,7 @@ def analyze_text(text: str, title=None, source_url=None, source_type=None) -> li
         model=GROQ_MODEL,
         temperature=0,
         max_tokens=3000,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": build_user_prompt(text, title=title, source_url=source_url, source_type=source_type)},
@@ -601,6 +602,7 @@ def render_analysis_results(analysis: list, export_filename: str):
 
 
 def render_history_summary(all_analyses: list):
+    all_analyses = [item for item in all_analyses if isinstance(item, dict)]
     if not all_analyses:
         return
     with st.expander("סיכום מצטבר של כל הניתוחים", expanded=True):

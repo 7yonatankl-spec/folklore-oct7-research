@@ -537,6 +537,7 @@ def _render_item_card(item: dict):
 
 
 def render_analysis_results(analysis: list, export_filename: str):
+    analysis = [item for item in analysis if isinstance(item, dict)]
     if not analysis:
         st.warning("הניתוח לא החזיר נתונים. נסה טקסט ארוך יותר או מקור שונה.")
         return

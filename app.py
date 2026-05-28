@@ -13,8 +13,19 @@ from bs4 import BeautifulSoup
 
 load_dotenv()
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+def _get_secret(key: str, default: str = "") -> str:
+    val = os.getenv(key, "")
+    if not val:
+        try:
+            val = st.secrets.get(key, default)
+        except Exception:
+            val = default
+    return val
+
+
+GROQ_API_KEY = _get_secret("GROQ_API_KEY")
+GROQ_MODEL = _get_secret("GROQ_MODEL") or "llama-3.1-8b-instant"
 SEARCH_API_KEY = os.getenv("SEARCH_API_KEY")
 SEARCH_ENGINE = os.getenv("SEARCH_ENGINE", "serpapi")
 

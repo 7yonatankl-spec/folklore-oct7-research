@@ -922,6 +922,123 @@ def render_history_tab():
         st.rerun()
 
 
+def _inject_css():
+    st.markdown("""
+    <style>
+    /* ── RTL global ── */
+    .stApp { direction: rtl; }
+    .stMarkdown p, .stMarkdown li, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        text-align: right;
+    }
+    .stTextInput input, .stTextArea textarea { direction: rtl; text-align: right; }
+    [data-baseweb="select"] * { direction: rtl; }
+    [data-baseweb="menu"] { direction: rtl; text-align: right; }
+    .stRadio > div { direction: rtl; }
+    [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
+    [data-testid="stMetricDelta"] { text-align: right; direction: rtl; }
+    .stCheckbox > label { direction: rtl; }
+    .stMultiSelect [data-baseweb="tag"] { direction: rtl; }
+    label { direction: rtl; text-align: right; }
+
+    /* keep URLs left-to-right */
+    a { direction: ltr; unicode-bidi: embed; }
+
+    /* ── Typography ── */
+    html, body, .stApp {
+        font-family: 'Segoe UI', 'Arial Hebrew', Arial, sans-serif;
+    }
+
+    /* ── Page header ── */
+    h1 {
+        color: #1b2a4a;
+        font-size: 1.85rem;
+        border-bottom: 3px solid #3b82f6;
+        padding-bottom: 0.35rem;
+        margin-bottom: 0.15rem;
+    }
+    h2 { color: #1e3a5f; }
+    h3 { color: #2c4f7c; font-size: 1.05rem; }
+
+    /* ── Top navigation tabs ── */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #f0f4fa;
+        border-radius: 10px;
+        padding: 4px;
+        gap: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        font-weight: 600;
+        color: #4a5568;
+        padding: 6px 18px;
+    }
+    .stTabs [aria-selected="true"] {
+        background: white;
+        color: #2563eb;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+    }
+
+    /* ── Analysis cards ── */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border: 1px solid #dbe8f8 !important;
+        border-radius: 14px !important;
+        background: #fafcff;
+        transition: box-shadow 0.2s;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"]:hover {
+        box-shadow: 0 4px 18px rgba(59,130,246,0.12);
+    }
+
+    /* ── Metric boxes ── */
+    [data-testid="metric-container"] {
+        background: #f0f6ff;
+        border-radius: 10px;
+        padding: 6px 10px;
+    }
+
+    /* ── Primary button ── */
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #2563eb, #3b82f6);
+        border: none;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 1rem;
+        transition: all 0.18s;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #1d4ed8, #2563eb);
+        box-shadow: 0 4px 14px rgba(37,99,235,0.32);
+        transform: translateY(-1px);
+    }
+    .stButton > button[kind="secondary"] {
+        border-radius: 8px;
+        font-weight: 600;
+    }
+
+    /* ── Expander ── */
+    [data-testid="stExpander"] summary {
+        font-weight: 600;
+        color: #1e3a5f;
+        direction: rtl;
+    }
+
+    /* ── Progress bar ── */
+    .stProgress > div > div > div {
+        background: linear-gradient(90deg, #3b82f6, #10b981);
+    }
+
+    /* ── Caption ── */
+    .stCaptionContainer p { color: #64748b; font-size: 0.82rem; }
+
+    /* ── Divider ── */
+    hr { border-color: #e2e8f0; margin: 1rem 0; }
+
+    /* ── Slider ── */
+    [data-testid="stSlider"] { direction: rtl; }
+    </style>
+    """, unsafe_allow_html=True)
+
+
 def main():
     st.set_page_config(
         page_title="מחקר פולקלור — 7 באוקטובר 2023",
@@ -929,10 +1046,11 @@ def main():
         page_icon="📖",
         initial_sidebar_state="collapsed",
     )
+    _inject_css()
     init_session_state()
 
     st.title("כלי מחקר דיגיטלי לפולקלור ומלחמת חרבות ברזל")
-    st.markdown("כלי לבדיקת נרטיבים מה-7 באוקטובר, איתור מקורות ברשת וניתוח מבני של סיפור, מוטיבים ותאריכים.")
+    st.markdown("כלי לאיתור, ניתוח וסיווג נרטיבים עממיים מה-7 באוקטובר 2023 — מוטיבים, מבנה פרופ, ז'אנר ועוד.")
     st.caption(f"סשן נוכחי: {len(st.session_state.history)} ניתוחים | מודל: {GROQ_MODEL}")
 
     tabs = st.tabs([

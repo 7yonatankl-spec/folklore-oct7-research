@@ -1,6 +1,8 @@
+import collections
 import os
 import re
 import json
+import time
 import streamlit as st
 import pandas as pd
 import requests
@@ -20,119 +22,181 @@ client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 
 def build_system_prompt() -> str:
-    vocab_lines = "\n".join(
-        f"  {cat}: {', '.join(terms)}"
-        for cat, terms in FOLKLORE_VOCABULARY.items()
+    vocab_lines = ", ".join(
+        term for terms in FOLKLORE_VOCABULARY.values() for term in terms
     )
     return (
-        "אתה מומחה לחקר פולקלור, ספרות עממית ומדעי הרוח הדיגיטליים, המתמחה באירועי 7 באוקטובר 2023 ומלחמת חרבות ברזל. "
-        "המשימה שלך היא לנתח טקסט עברי חופשי או תמצית מקורות רשת, ולייצא את התוצאה בלבד בפורמט JSON תקין. "
-        "אל תכלול הסברים, הערות, או טקסט חופשי נוסף מעבר ל-JSON בלבד. "
-        "ה-json יכול להיות אובייקט בודד או רשימה של אובייקטים. "
-        "\n\nאוצר מילים דומיין-ספציפי שעליך להכיר ולזהות בטקסטים:\n"
-        + vocab_lines +
-        "\n\nכל אובייקט חייב להכיל את השדות הבאים: title, source_type, source_url, narrative_summary, motifs, structure, dates_mentioned, locations, named_entities, sentiment, confidence. "
-        "source_type צריך להיות אחד מהערכים הבאים: עדות_ראשונית, עיתונות, רשת_חברתית, פרסום_רשמי, שמועה, מיתוס_עירוני, אחר. "
-        "source_url חייב להיות כתובת URL מלאה או מחרוזת ריקה אם לא ידוע. "
-        "narrative_summary חייב להיות תמצית קצרה בעברית של התוכן. "
-        "motifs ו-structure חייבים להיות רשימות של מחרוזות קצרות — השתמש במונחים מאוצר המילים לעיל כשרלוונטי. "
-        "dates_mentioned חייב להיות אובייקט עם event_date ו-publication_date בפורמט ISO 8601 (YYYY-MM-DD) או מחרוזת ריקה. "
-        "locations היא רשימה של שמות מקום — כולל קיבוצים ויישובי עוטף עזה כשרלוונטי. "
-        "named_entities היא רשימה של שמות אנשים, ארגונים או גופים. "
-        "sentiment הוא רגש דומיננטי: אבל, כעס, גבורה, פחד, תקווה, אמביוולנטי. "
-        "confidence הוא מספר בין 0 ל-1. "
-        "אם אין מידע מסוים, השתמש בערך ריק או ברשימה ריקה, אך שמור על JSON תקין. "
+        "מומחה פולקלור — 7 באוקטובר 2023. נתח טקסט עברי והחזר JSON בלבד, ללא טקסט נוסף. "
+        "שיטות: פרופ (1928), Thompson Motif Index, Von Sydow, Herman (1992), Ong.\n"
+        f"מילון: {vocab_lines}\n\n"
+        "כל אובייקט JSON חייב לכלול:\n"
+        "title, source_type(עדות_ראשונית|עיתונות|רשת_חברתית|פרסום_רשמי|שמועה|מיתוס_עירוני|אחר), "
+        "source_url, narrative_summary, motifs[], structure[], "
+        "dates_mentioned{event_date,publication_date}, locations[], named_entities[], "
+        "sentiment(אבל|כעס|גבורה|פחד|תקווה|אמביוולנטי), confidence(0-1), "
+        "propp_functions[](ABSENTATION|INTERDICTION|VIOLATION|RECONNAISSANCE|DELIVERY|TRICKERY|"
+        "COMPLICITY|VILLAINY|MEDIATION|COUNTERACTION|DEPARTURE|FIRST_FUNCTION_DONOR|HERO_REACTION|"
+        "RECEIPT_MAGICAL_AGENT|GUIDANCE|STRUGGLE|BRANDING|VICTORY|LIQUIDATION|RETURN|PURSUIT|"
+        "RESCUE|DIFFICULT_TASK|SOLUTION|RECOGNITION|PUNISHMENT|WEDDING), "
+        "atu_motifs[], "
+        "oral_register(ראשוני|משני|שמיעתי|כתוב_מקורי|נוצר_מחדש|ויראלי|בלתי_ידוע), "
+        "narrative_genre(ממולה|עדות_טראומה|סיפור_גבורה|מיתוס_מייסד|אגדה_עירונית|קינה|סיפור_נס|כרוניקה|ספד_אישי|אחר), "
+        "intertextual_echoes[], "
+        "narrator_perspective(גוף_ראשון_יחיד|גוף_ראשון_רבים|גוף_שלישי|עד_ראייה_ישיר|מדווח_עקיף|קולקטיבי|בלתי_ידוע), "
+        "temporal_distance(מיידי|קצר_טווח|בינוני|ארוך_טווח|בלתי_ידוע), "
+        "source_reliability_score(1-5), "
+        "legend_stage(memorat|fabulate|proto-legend|legend|myth), "
+        "memory_community[]."
     )
 
 
-def build_user_prompt(text: str, title: str | None = None, source_url: str | None = None, source_type: str | None = None) -> str:
-    prompt_parts = []
+def build_user_prompt(text: str, title=None, source_url=None, source_type=None) -> str:
+    parts = []
     if title:
-        prompt_parts.append(f"כותרת מקור: {title}")
+        parts.append(f"כותרת מקור: {title}")
     if source_type:
-        prompt_parts.append(f"סוג מקור: {source_type}")
+        parts.append(f"סוג מקור: {source_type}")
     if source_url:
-        prompt_parts.append(f"כתובת מקור: {source_url}")
-    prompt_parts.append("טקסט לניתוח:")
-    prompt_parts.append(text)
-    prompt_parts.append(
-        "השב רק JSON תקין בלבד, ללא הסברים, ללא טקסט נוסף וללא סימנים אחרים לפני/אחרי ה-JSON."
-    )
-    return "\n".join(prompt_parts)
+        parts.append(f"כתובת מקור: {source_url}")
+    parts.append("טקסט לניתוח:")
+    parts.append(text)
+    parts.append("השב רק JSON תקין בלבד, ללא הסברים וללא טקסט נוסף.")
+    return "\n".join(parts)
 
 
-def analyze_text(text: str, title: str | None = None, source_url: str | None = None, source_type: str | None = None) -> list:
+def analyze_text(text: str, title=None, source_url=None, source_type=None) -> list:
     if not client:
         raise RuntimeError("חסר GROQ_API_KEY. הוסף אותו לקובץ .env (חינמי בgroq.com).")
-
+    # Keep input under ~6000 chars to stay within token budget
+    text = text[:6000]
     response = client.chat.completions.create(
         model=GROQ_MODEL,
         temperature=0,
-        max_tokens=2000,
+        max_tokens=3000,
         messages=[
             {"role": "system", "content": build_system_prompt()},
             {"role": "user", "content": build_user_prompt(text, title=title, source_url=source_url, source_type=source_type)},
         ],
     )
     content = response.choices[0].message.content.strip()
-
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        parsed = json.loads(_clean_json_response(content))
-
+    parsed = _parse_json_robust(content)
     if isinstance(parsed, dict):
         parsed = [parsed]
     return parsed
 
 
-def _clean_json_response(raw: str) -> str:
+def _parse_json_robust(content: str):
+    # 1. Direct parse
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    # 2. Strip markdown fences and retry
+    stripped = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.MULTILINE).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    # 3. Extract first [...] or {...} block
     for start_char, end_char in [("[", "]"), ("{", "}")]:
-        start = raw.find(start_char)
-        end = raw.rfind(end_char) + 1
+        start = stripped.find(start_char)
+        end = stripped.rfind(end_char) + 1
         if start != -1 and end > 0:
-            return raw[start:end]
+            try:
+                return json.loads(stripped[start:end])
+            except json.JSONDecodeError:
+                pass
+    # 4. Multiple concatenated objects: collect all with raw_decode
+    decoder = json.JSONDecoder()
+    results, idx = [], 0
+    while idx < len(stripped):
+        while idx < len(stripped) and stripped[idx] in " \t\n\r,":
+            idx += 1
+        if idx >= len(stripped):
+            break
+        try:
+            obj, end = decoder.raw_decode(stripped, idx)
+            results.append(obj)
+            idx = end
+        except json.JSONDecodeError:
+            idx += 1
+    if results:
+        return results if len(results) > 1 else results[0]
     raise ValueError("לא נמצא JSON תקין בתשובת המודל")
+
+
+def get_youtube_transcript(url: str) -> str:
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound
+        vid_match = re.search(r"(?:v=|youtu\.be/|embed/|shorts/)([a-zA-Z0-9_-]{11})", url)
+        if not vid_match:
+            return ""
+        vid_id = vid_match.group(1)
+        try:
+            segments = YouTubeTranscriptApi.get_transcript(vid_id, languages=["he", "iw"])
+        except (NoTranscriptFound, Exception):
+            segments = YouTubeTranscriptApi.get_transcript(vid_id)
+        return " ".join(s["text"] for s in segments)[:4000]
+    except Exception:
+        return ""
 
 
 def fetch_source_page_text(source_url: str, timeout: int = 8) -> str:
     if not source_url:
         return ""
+    if "youtube.com" in source_url or "youtu.be" in source_url:
+        transcript = get_youtube_transcript(source_url)
+        if transcript:
+            return f"[תמלול וידאו YouTube]\n{transcript}"
     try:
-        r = requests.get(
-            source_url,
-            timeout=timeout,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept-Language": "he,en;q=0.9",
-            },
-        )
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "he,en;q=0.9",
+        }
+        r = requests.get(source_url, timeout=timeout, headers=headers)
         r.raise_for_status()
         soup = BeautifulSoup(r.content, "html.parser")
-
         for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form", "iframe"]):
             tag.decompose()
 
-        main_content = (
-            soup.find("article")
-            or soup.find("main")
-            or soup.find(id=re.compile(r"content|article|main", re.I))
-            or soup.find(class_=re.compile(r"content|article|main|post|entry", re.I))
-            or soup.find("body")
-            or soup
-        )
+        domain = re.sub(r"https?://(www\.)?", "", source_url).split("/")[0]
 
-        lines = []
-        for element in main_content.find_all(["p", "h1", "h2", "h3", "li", "blockquote"]):
-            text = element.get_text(separator=" ", strip=True)
-            if len(text) > 25:
-                lines.append(text)
+        # edut710.org category pages (/locations/, /people/) list testimonies —
+        # drill into the first individual testimony link instead
+        if "edut710" in domain and any(seg in source_url for seg in ["/locations/", "/people/", "/events/"]):
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                full = href if href.startswith("http") else f"https://{domain}{href}"
+                if "/testimonies/" in full or "/testimony/" in full:
+                    return fetch_source_page_text(full, timeout=timeout)
 
+        if "edut710" in domain:
+            main_content = (
+                soup.find(class_=re.compile(r"testimony|edut|content|story", re.I))
+                or soup.find("body") or soup
+            )
+        elif "kan.org" in domain:
+            main_content = (
+                soup.find(class_=re.compile(r"article|content|story|kan", re.I))
+                or soup.find("body") or soup
+            )
+        else:
+            main_content = (
+                soup.find("article")
+                or soup.find("main")
+                or soup.find(id=re.compile(r"content|article|main", re.I))
+                or soup.find(class_=re.compile(r"content|article|main|post|entry", re.I))
+                or soup.find("body") or soup
+            )
+
+        lines = [
+            el.get_text(separator=" ", strip=True)
+            for el in main_content.find_all(["p", "h1", "h2", "h3", "li", "blockquote"])
+            if len(el.get_text(strip=True)) > 25
+        ]
         result = "\n".join(lines)
         if len(result) < 200:
-            result = main_content.get_text(separator="\n", strip=True)
-            result = re.sub(r"\n{3,}", "\n\n", result)
-
+            result = re.sub(r"\n{3,}", "\n\n", main_content.get_text(separator="\n", strip=True))
         return result[:4000].strip()
     except Exception:
         return ""
@@ -142,10 +206,17 @@ def narrative_score(text: str) -> int:
     markers = [
         "אני ", "אנחנו ", "הייתי ", "היינו ", "ראיתי ", "שמעתי ", "הרגשתי ",
         "ברחתי ", "הסתתרתי ", "ניצלתי ", "חבאתי ", "לקחתי ",
+        "סיפרה לי", "סיפר לי", "לא אשכח", "עד היום", "זוכר", "זוכרת",
+        "מעיד", "מעידה", "מפי", "בפי",
         "עדות", "סיפור", "הצלה", "בריחה", 'ז"ל', 'הי"ד', "נרצח", "ספר",
         "נרצחה", "חטוף", "חטופה", "ניצול", "ניצולה", "מסתור",
+        "נהרג", "נהרגה", "נשרף", "נשרפה", "גופה",
+        "נחטף", "נחטפה", "שבוי", "שבויה",
+        "הציל", "הצילה", "גיבור", "כיתת כוננות",
         "פיצוץ", "ירייה", "יריות", "רימון", "מחבלים", "טרור",
+        "אזעקה", "צבע אדום",
         "שמחת תורה", "פסטיבל", "נובה", "7 באוקטובר", "שביעי באוקטובר",
+        "בארי", "כפר עזה", "ניר עוז", "רעים", "נחל עוז",
     ]
     return sum(1 for m in markers if m in text)
 
@@ -182,7 +253,6 @@ FOLKLORE_VOCABULARY = {
     ],
 }
 
-
 SOCIAL_MEDIA_SITES = [
     ("twitter.com OR x.com", "רשת_חברתית"),
     ("facebook.com", "רשת_חברתית"),
@@ -193,26 +263,66 @@ SOCIAL_MEDIA_SITES = [
     ("reddit.com", "רשת_חברתית"),
 ]
 
+TESTIMONY_ARCHIVE_SITES = [
+    ("edut710.org", "עדות_ראשונית"),
+    ("710360.kan.org.il", "עדות_ראשונית"),
+    ("ynet.co.il", "עיתונות"),
+    ("haaretz.co.il", "עיתונות"),
+    ("mako.co.il", "עיתונות"),
+    ("walla.co.il", "עיתונות"),
+    ("zman.co.il", "עיתונות"),
+]
 
-def _ddg_text(query: str, max_results: int) -> list[dict]:
+QUERY_TEMPLATES = {
+    "בחר תבנית...": "",
+    "עדויות ניצולים — קיבוץ בארי": "עדות ניצול קיבוץ בארי 7 באוקטובר",
+    "עדויות ניצולים — פסטיבל נובה": "עדות ניצול פסטיבל נובה 7 באוקטובר",
+    "עדויות ניצולים — כפר עזה": "עדות ניצול כפר עזה 7 באוקטובר",
+    "עדויות ניצולים — ניר עוז": "עדות ניצול ניר עוז 7 באוקטובר",
+    "חטופים — עדויות שחרור": "עדות חטוף שוחרר עזה 7 באוקטובר",
+    'כיתות כוננות — סיפורי גבורה': "כיתת כוננות הגנה 7 באוקטובר עדות גבורה",
+    'מסתורים וממ"ד': 'התחבאתי ממד 7 באוקטובר עדות',
+    "עדויות — ארכיון עדות 710": "site:edut710.org עדות",
+    "עדויות — כאן 710": "site:710360.kan.org.il עדות ניצול",
+}
+
+ALL_PROPP_FUNCTIONS = [
+    ("ABSENTATION", "היעדרות"), ("INTERDICTION", "איסור"), ("VIOLATION", "הפרת האיסור"),
+    ("RECONNAISSANCE", "סיור"), ("DELIVERY", "מידע לנבל"), ("TRICKERY", "תחבולה"),
+    ("COMPLICITY", "שיתוף פעולה"), ("VILLAINY", "פשע/נזק"), ("MEDIATION", "תיווך"),
+    ("COUNTERACTION", "פעולת נגד"), ("DEPARTURE", "יציאה לדרך"),
+    ("FIRST_FUNCTION_DONOR", "מתן מבחן"), ("HERO_REACTION", "תגובת הגיבור"),
+    ("RECEIPT_MAGICAL_AGENT", "קבלת סיוע"), ("GUIDANCE", "הנחיה"),
+    ("STRUGGLE", "מאבק"), ("BRANDING", "סימון"), ("VICTORY", "ניצחון"),
+    ("LIQUIDATION", "חיסול המחסור"), ("RETURN", "חזרה"), ("PURSUIT", "מרדף"),
+    ("RESCUE", "הצלה"), ("DIFFICULT_TASK", "משימה קשה"), ("SOLUTION", "פתרון"),
+    ("RECOGNITION", "זיהוי"), ("PUNISHMENT", "עונש"), ("WEDDING", "תגמול"),
+]
+
+
+_EXCLUDED_DOMAINS = {"wikipedia.org", "he.wikipedia.org", "en.wikipedia.org", "wikidata.org", "britannica.com"}
+
+def _is_excluded(url: str) -> bool:
+    domain = re.sub(r"https?://(www\.)?", "", url).split("/")[0]
+    return any(excl in domain for excl in _EXCLUDED_DOMAINS)
+
+
+def _ddg_text(query: str, max_results: int) -> list:
     with DDGS() as ddgs:
-        results = list(ddgs.text(query, region="wt-wt", max_results=max_results))
-    return results
+        return list(ddgs.text(query, region="wt-wt", max_results=max_results))
 
 
-def _ddg_news(query: str, max_results: int) -> list[dict]:
+def _ddg_news(query: str, max_results: int) -> list:
     with DDGS() as ddgs:
-        results = list(ddgs.news(query, region="wt-wt", max_results=max_results))
-    return results
+        return list(ddgs.news(query, region="wt-wt", max_results=max_results))
 
 
-def _search_ddg_social(query: str, max_results: int) -> list[dict]:
+def _search_ddg_social(query: str, max_results: int) -> list:
     all_results = []
     per_site = max(2, (max_results // len(SOCIAL_MEDIA_SITES)) + 1)
     for site, source_type in SOCIAL_MEDIA_SITES:
         try:
-            raw = _ddg_text(f"site:{site} {query}", per_site)
-            for r in raw:
+            for r in _ddg_text(f"site:{site} {query}", per_site):
                 all_results.append({
                     "title": r.get("title", ""),
                     "snippet": r.get("body", ""),
@@ -224,105 +334,117 @@ def _search_ddg_social(query: str, max_results: int) -> list[dict]:
     return all_results[:max_results]
 
 
-def _search_ddg(query: str, max_results: int, search_mode: str) -> list[dict]:
+def _search_ddg_testimony_archives(query: str, max_results: int) -> list:
+    all_results = []
+    per_site = max(3, (max_results // len(TESTIMONY_ARCHIVE_SITES)) + 1)
+    for site, source_type in TESTIMONY_ARCHIVE_SITES:
+        try:
+            for r in _ddg_text(f"site:{site} {query}", per_site):
+                all_results.append({
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body", ""),
+                    "source_url": r.get("href", ""),
+                    "source_type": source_type,
+                })
+        except Exception:
+            continue
+    return all_results[:max_results]
+
+
+_STORY_TERMS = "עדות OR סיפר OR מספרת OR ניצול OR בריחה"
+
+def _to_items_text(raw: list, url_key: str) -> list:
+    return [
+        {"title": r.get("title", ""), "snippet": r.get("body", r.get("excerpt", "")),
+         "source_url": r.get(url_key, ""), "source_type": "עיתונות"}
+        for r in raw if not _is_excluded(r.get(url_key, ""))
+    ]
+
+def _to_items_news(raw: list) -> list:
+    return [
+        {"title": r.get("title", ""), "snippet": r.get("body", r.get("excerpt", "")),
+         "source_url": r.get("url", ""), "source_type": "עיתונות"}
+        for r in raw if not _is_excluded(r.get("url", ""))
+    ]
+
+def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
     if search_mode == "social":
         return _search_ddg_social(query, max_results)
-
+    if search_mode == "testimony":
+        return _search_ddg_testimony_archives(query, max_results)
     if search_mode == "news":
         try:
-            raw = _ddg_news(query, max_results)
-            if raw:
-                return [{"title": r.get("title",""), "snippet": r.get("body",""), "source_url": r.get("url",""), "source_type": "עיתונות"} for r in raw]
+            return _to_items_news(_ddg_news(query, max_results))
         except Exception:
             pass
         return []
-
-    # web: try text, fallback to news
+    # web/story mode: add narrative terms, post-filter encyclopedias
+    story_query = f"{query} {_STORY_TERMS}"
     try:
-        raw = _ddg_text(query, max_results)
-        if raw:
-            return [{"title": r.get("title",""), "snippet": r.get("body",""), "source_url": r.get("href",""), "source_type": "עיתונות"} for r in raw]
+        raw = _ddg_text(story_query, max_results + 3)
+        items = _to_items_text(raw, "href")
+        if items:
+            return items[:max_results]
     except Exception:
         pass
-    # fallback: news
+    # fallback: plain query, still post-filter
     try:
-        raw = _ddg_news(query, max_results)
-        if raw:
-            return [{"title": r.get("title",""), "snippet": r.get("body",""), "source_url": r.get("url",""), "source_type": "עיתונות"} for r in raw]
+        raw = _ddg_text(query, max_results + 3)
+        items = _to_items_text(raw, "href")
+        if items:
+            return items[:max_results]
+    except Exception:
+        pass
+    try:
+        return _to_items_news(_ddg_news(query, max_results))
     except Exception:
         pass
     return []
 
 
-def search_web(query: str, max_results: int = 5, search_mode: str = "web") -> list[dict]:
+def search_web(query: str, max_results: int = 5, search_mode: str = "web") -> list:
     if not SEARCH_API_KEY:
         return _search_ddg(query, max_results, search_mode)
-
     if SEARCH_ENGINE == "serpapi":
-        url = "https://serpapi.com/search"
-        params = {
-            "q": query,
-            "api_key": SEARCH_API_KEY,
-            "engine": "google",
-            "num": max_results,
-            "hl": "he",
-        }
+        params = {"q": query, "api_key": SEARCH_API_KEY, "engine": "google", "num": max_results, "hl": "he"}
         if search_mode == "news":
             params["tbm"] = "nws"
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get("https://serpapi.com/search", params=params, timeout=15)
         r.raise_for_status()
-        data = r.json()
-        return [
-            {
-                "title": item.get("title", ""),
-                "snippet": item.get("snippet", ""),
-                "source_url": item.get("link", item.get("displayed_link", "")),
-                "source_type": "עיתונות",
-            }
-            for item in data.get("organic_results", [])
-        ]
-
-    elif SEARCH_ENGINE == "bing":
-        url = "https://api.bing.microsoft.com/v7.0/search"
-        headers = {"Ocp-Apim-Subscription-Key": SEARCH_API_KEY}
-        params = {"q": query, "count": max_results, "mkt": "he-IL"}
-        r = requests.get(url, headers=headers, params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        return [
-            {
-                "title": item.get("name", ""),
-                "snippet": item.get("snippet", ""),
-                "source_url": item.get("url", ""),
-                "source_type": "עיתונות",
-            }
-            for item in data.get("webPages", {}).get("value", [])
-        ]
-
+        return [{"title": i.get("title", ""), "snippet": i.get("snippet", ""), "source_url": i.get("link", i.get("displayed_link", "")), "source_type": "עיתונות"} for i in r.json().get("organic_results", [])]
     raise ValueError(f"מנוע חיפוש לא מוכר: {SEARCH_ENGINE}")
 
 
 def json_to_dataframe(payload) -> pd.DataFrame:
     if isinstance(payload, dict):
         payload = [payload]
-    if isinstance(payload, list):
-        return pd.json_normalize(payload)
-    raise ValueError("Payload אינו רשימה או מילון.")
+    return pd.json_normalize(payload)
 
 
 def init_session_state():
-    if "history" not in st.session_state:
-        st.session_state.history = []
-    if "search_results" not in st.session_state:
-        st.session_state.search_results = None
-    if "search_analysis" not in st.session_state:
-        st.session_state.search_analysis = None
-    if "selected_search_indices" not in st.session_state:
-        st.session_state.selected_search_indices = []
-    if "search_source_texts" not in st.session_state:
-        st.session_state.search_source_texts = {}
-    if "query_draft" not in st.session_state:
-        st.session_state.query_draft = ""
+    defaults = {
+        "history": [],
+        "search_results": None,
+        "search_analysis": None,
+        "selected_search_indices": [],
+        "search_source_texts": {},
+        "search_source_titles": {},
+        "query_draft": "",
+        "manual_analysis": None,
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+
+def _parse_retry_seconds(msg: str) -> int:
+    m = re.search(r"try again in (\d+)m([\d.]+)s", msg)
+    if m:
+        return int(m.group(1)) * 60 + int(float(m.group(2)))
+    m = re.search(r"try again in ([\d.]+)s", msg)
+    if m:
+        return int(float(m.group(1)))
+    return 0
 
 
 def add_to_history(source: str, text_preview: str, analysis: list):
@@ -333,35 +455,125 @@ def add_to_history(source: str, text_preview: str, analysis: list):
     })
 
 
-def render_analysis_results(analysis: list, export_filename: str):
-    st.subheader("תוצאת הניתוח")
+def _render_item_card(item: dict):
+    with st.container(border=True):
+        st.markdown(f"### {item.get('title', 'ללא כותרת')}")
+        c1, c2, c3, c4 = st.columns(4)
+        confidence = item.get("confidence", 0)
+        reliability = item.get("source_reliability_score", "—")
+        with c1:
+            st.metric("ז'אנר", item.get("narrative_genre", "—"))
+        with c2:
+            st.metric("רגש", item.get("sentiment", "—"))
+        with c3:
+            st.metric("אמינות מקור", f"{reliability}/5" if isinstance(reliability, (int, float)) else "—")
+        with c4:
+            conf_pct = f"{confidence * 100:.0f}%" if isinstance(confidence, (int, float)) else "—"
+            st.metric("ביטחון", conf_pct)
 
-    tab_table, tab_motifs, tab_json = st.tabs(["טבלה", "מוטיבים ומבנה", "JSON גולמי"])
+        summary = item.get("narrative_summary", "")
+        if summary:
+            st.write(summary)
+
+        motifs = item.get("motifs", [])
+        if isinstance(motifs, list) and motifs:
+            st.markdown("**מוטיבים:** " + " · ".join(motifs))
+
+        echoes = item.get("intertextual_echoes", [])
+        if isinstance(echoes, list) and echoes:
+            st.markdown("**הדהודים בין-טקסטואליים:** " + " · ".join(echoes))
+
+        meta_parts = []
+        for label, key in [("שלב אגדה", "legend_stage"), ("רישום", "oral_register"), ("נרטור", "narrator_perspective"), ("מרחק זמני", "temporal_distance")]:
+            val = item.get(key, "")
+            if val:
+                meta_parts.append(f"{label}: {val}")
+        if meta_parts:
+            st.caption(" | ".join(meta_parts))
+
+        url = item.get("source_url", "")
+        if url:
+            st.link_button("פתח מקור", url)
+
+        with st.expander("טבלת פרטים מלאה"):
+            def _join(val):
+                if isinstance(val, list):
+                    return ", ".join(str(v) for v in val) if val else "—"
+                return str(val) if val else "—"
+
+            dates = item.get("dates_mentioned", {})
+            rows = [
+                ("📅 תאריך אירוע",    dates.get("event_date", "—") if isinstance(dates, dict) else "—"),
+                ("📅 תאריך פרסום",    dates.get("publication_date", "—") if isinstance(dates, dict) else "—"),
+                ("⏱ מרחק זמני",       item.get("temporal_distance", "—") or "—"),
+                ("📍 מקומות",          _join(item.get("locations", []))),
+                ("👤 דמויות וארגונים", _join(item.get("named_entities", []))),
+                ("🎭 נרטור",           item.get("narrator_perspective", "—") or "—"),
+                ("🎙 רישום אוראלי",    item.get("oral_register", "—") or "—"),
+                ("📖 שלב אגדה",        item.get("legend_stage", "—") or "—"),
+                ("🏘 קהילת זיכרון",    _join(item.get("memory_community", []))),
+                ("🔗 הדהודים",         _join(item.get("intertextual_echoes", []))),
+                ("⚙ פונקציות פרופ",    _join(item.get("propp_functions", []))),
+                ("🔖 קודי ATU",        _join(item.get("atu_motifs", []))),
+                ("🧩 מוטיבים",         _join(item.get("motifs", []))),
+                ("🏗 מבנה נרטיבי",     _join(item.get("structure", []))),
+            ]
+            st.dataframe(
+                pd.DataFrame(rows, columns=["קטגוריה", "ערכים"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+def render_analysis_results(analysis: list, export_filename: str):
+    if not analysis:
+        st.warning("הניתוח לא החזיר נתונים. נסה טקסט ארוך יותר או מקור שונה.")
+        return
+
+    st.subheader("תוצאת הניתוח")
+    tab_summary, tab_table, tab_propp = st.tabs(["סיכום קריאה", "טבלה", "מורפולוגיית פרופ"])
+
+    with tab_summary:
+        for item in analysis:
+            _render_item_card(item)
+
     with tab_table:
         df = json_to_dataframe(analysis)
-        st.dataframe(df, use_container_width=True)
-    with tab_motifs:
-        motif_rows = []
+        nested_cols = [c for c in df.columns if "." in c or c in (
+            "propp_functions", "atu_motifs", "motifs", "structure",
+            "locations", "named_entities", "intertextual_echoes", "memory_community"
+        )]
+        show_cols = [c for c in df.columns if c not in nested_cols]
+        rename_map = {
+            "title": "כותרת", "source_type": "סוג מקור", "narrative_summary": "תמצית",
+            "sentiment": "רגש", "confidence": "ביטחון", "oral_register": "רישום",
+            "narrative_genre": "ז'אנר", "narrator_perspective": "נרטור",
+            "temporal_distance": "מרחק זמני", "legend_stage": "שלב אגדה",
+            "source_reliability_score": "אמינות", "source_url": "מקור",
+        }
+        st.dataframe(df[show_cols].rename(columns=rename_map), use_container_width=True)
+
+    with tab_propp:
         for item in analysis:
-            motif_rows.append({
-                "כותרת": item.get("title", ""),
-                "מוטיבים": ", ".join(item.get("motifs", [])) if isinstance(item.get("motifs"), list) else item.get("motifs", ""),
-                "מבנה": ", ".join(item.get("structure", [])) if isinstance(item.get("structure"), list) else item.get("structure", ""),
-                "מקומות": ", ".join(item.get("locations", [])) if isinstance(item.get("locations"), list) else item.get("locations", ""),
-                "ישויות": ", ".join(item.get("named_entities", [])) if isinstance(item.get("named_entities"), list) else item.get("named_entities", ""),
-                "רגש": item.get("sentiment", ""),
-                "ביטחון": item.get("confidence", ""),
-            })
-        st.dataframe(pd.DataFrame(motif_rows), use_container_width=True)
-    with tab_json:
-        st.code(json.dumps(analysis, ensure_ascii=False, indent=2), language="json")
+            st.markdown(f"**{item.get('title', 'ללא כותרת')}**")
+            found = set(item.get("propp_functions", []))
+            cols = st.columns(5)
+            for i, (code, he_name) in enumerate(ALL_PROPP_FUNCTIONS):
+                with cols[i % 5]:
+                    if code in found:
+                        st.markdown(f"✅ {he_name}")
+                    else:
+                        st.markdown(f"<span style='color:#bbb'>⬜ {he_name}</span>", unsafe_allow_html=True)
+            atu = item.get("atu_motifs", [])
+            if isinstance(atu, list) and atu:
+                st.caption("קודי ATU/Thompson: " + ", ".join(atu))
+            st.divider()
 
     col_csv, col_json_dl = st.columns(2)
     with col_csv:
-        df_export = json_to_dataframe(analysis)
         st.download_button(
             label="הורד כ-CSV",
-            data=df_export.to_csv(index=False, encoding="utf-8-sig"),
+            data=json_to_dataframe(analysis).to_csv(index=False).encode("utf-8-sig"),
             file_name=f"{export_filename}.csv",
             mime="text/csv",
             use_container_width=True,
@@ -376,14 +588,74 @@ def render_analysis_results(analysis: list, export_filename: str):
         )
 
 
+def render_history_summary(all_analyses: list):
+    if not all_analyses:
+        return
+    with st.expander("סיכום מצטבר של כל הניתוחים", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        all_motifs, all_sentiments, all_genres = [], [], []
+        for item in all_analyses:
+            m = item.get("motifs", [])
+            if isinstance(m, list):
+                all_motifs.extend(m)
+            s = item.get("sentiment", "")
+            if s:
+                all_sentiments.append(s)
+            g = item.get("narrative_genre", "")
+            if g:
+                all_genres.append(g)
+        with col1:
+            st.metric("ניתוחים שבוצעו", len(all_analyses))
+        if all_sentiments:
+            with col2:
+                st.metric("רגש שולט", collections.Counter(all_sentiments).most_common(1)[0][0])
+        if all_genres:
+            with col3:
+                st.metric("ז'אנר נפוץ", collections.Counter(all_genres).most_common(1)[0][0])
+        if all_motifs:
+            top = collections.Counter(all_motifs).most_common(8)
+            df_m = pd.DataFrame(top, columns=["מוטיב", "תדירות"]).set_index("מוטיב")
+            st.markdown("**מוטיבים נפוצים ביותר**")
+            st.bar_chart(df_m)
+        if all_sentiments:
+            df_s = pd.DataFrame(collections.Counter(all_sentiments).items(), columns=["רגש", "כמות"]).set_index("רגש")
+            st.markdown("**התפלגות רגש**")
+            st.bar_chart(df_s)
+
+
 def render_search_tab():
     st.header("סוכן חיפוש וסריקה אוטומטית")
-    st.write("הזן מילת חיפוש או לחץ על מונח מהרשימה להוספתו לשאילתה.")
 
-    if "query_draft" not in st.session_state:
-        st.session_state["query_draft"] = ""
+    template = st.selectbox(
+        "תבניות חיפוש מוכנות",
+        options=list(QUERY_TEMPLATES.keys()),
+        index=0,
+    )
+    if template != "בחר תבנית..." and QUERY_TEMPLATES[template]:
+        if st.session_state.get("query_draft") != QUERY_TEMPLATES[template]:
+            st.session_state["query_draft"] = QUERY_TEMPLATES[template]
+            st.rerun()
 
-    with st.expander("מילון מונחים — לחץ להוספה לשאילתה", expanded=False):
+    query = st.text_input("מילת חיפוש", key="query_draft")
+    col_max, col_mode = st.columns([1, 2])
+    with col_max:
+        max_results = st.slider("כמות תוצאות", min_value=1, max_value=20, value=7)
+    with col_mode:
+        search_mode = st.radio(
+            "איפה לחפש",
+            ["web", "news", "social", "testimony"],
+            index=0,
+            horizontal=True,
+            format_func=lambda c: {
+                "web": "🌐 כל הרשת (סיפורים)",
+                "news": "📰 אתרי חדשות",
+                "social": "📱 רשתות חברתיות",
+                "testimony": "🗂 ארכיוני עדויות",
+            }[c],
+        )
+
+    with st.expander("הוסף מונח לשאילתה מהמילון הפולקלורי", expanded=False):
+        st.caption("לחץ על מונח להוספתו לשאילתת החיפוש")
         for category, terms in FOLKLORE_VOCABULARY.items():
             st.markdown(f"**{category}**")
             cols = st.columns(min(len(terms), 6))
@@ -394,17 +666,7 @@ def render_search_tab():
                         st.session_state["query_draft"] = (current + " " + term).strip()
                         st.rerun()
 
-    query = st.text_input("מילת חיפוש לעיון ברשת", key="query_draft")
-    max_results = st.slider("כמות תוצאות לחיפוש", min_value=1, max_value=10, value=5)
-
-    search_mode = st.selectbox(
-        "סוג חיפוש",
-        ["web", "news", "social"],
-        index=0,
-        format_func=lambda c: {"web": "כללי", "news": "חדשות", "social": "רשתות חברתיות"}[c],
-    )
-
-    if st.button("הפעל סוכן חיפוש", use_container_width=True):
+    if st.button("הפעל סוכן חיפוש", use_container_width=True, type="primary"):
         if not query.strip():
             st.warning("הזן מילת חיפוש לפני הפעלת הסוכן.")
         else:
@@ -417,68 +679,151 @@ def render_search_tab():
                     st.session_state.search_results = results
                     st.session_state.search_analysis = None
                     st.session_state.search_source_texts = {}
-                    st.session_state.selected_search_indices = list(range(len(results)))
+                    st.session_state.search_source_titles = {}
+                    high_score = [i for i, item in enumerate(results) if narrative_score(item.get("title", "") + " " + item.get("snippet", "")) >= 3]
+                    st.session_state.selected_search_indices = high_score if high_score else list(range(len(results)))
                     st.success(f"נמצאו {len(results)} תוצאות.")
             except Exception as exc:
                 st.error(f"שגיאה בחיפוש: {exc}")
 
+    st.divider()
+    st.subheader("הוספה ישירה ממקור URL")
+    direct_url = st.text_input("הדבק כתובת URL של עדות לניתוח ישיר", key="direct_url_input")
+    if st.button("שלוף ונתח מה-URL", use_container_width=True):
+        if not direct_url.strip():
+            st.warning("הכנס כתובת URL.")
+        else:
+            try:
+                with st.spinner("שולף תוכן מהמקור ומריץ ניתוח..."):
+                    source_text = fetch_source_page_text(direct_url.strip())
+                    if not source_text:
+                        st.error("לא ניתן לשלוף תוכן מהכתובת הזו.")
+                    else:
+                        analysis = analyze_text(source_text, source_url=direct_url.strip(), source_type="עדות_ראשונית")
+                        add_to_history("URL ישיר: " + direct_url, source_text, analysis)
+                        st.session_state.search_analysis = analysis
+                        st.success("הניתוח הושלם.")
+            except Exception as exc:
+                st.error(f"שגיאה: {exc}")
+
     if st.session_state.search_results:
+        st.divider()
         scored = []
         for item in st.session_state.search_results:
             score = narrative_score(item.get("title", "") + " " + item.get("snippet", ""))
-            scored.append({**item, "ציון_נרטיב": score})
-        df_all = pd.DataFrame(scored)
-        display_cols = ["title", "snippet", "source_url", "source_type", "ציון_נרטיב"]
-        df_display = df_all[[c for c in display_cols if c in df_all.columns]]
-        st.dataframe(df_display, use_container_width=True)
+            domain = re.sub(r"https?://(www\.)?", "", item.get("source_url", "")).split("/")[0]
+            scored.append({**item, "ציון_נרטיב": score, "דומיין": domain})
+        scored.sort(key=lambda x: x["ציון_נרטיב"], reverse=True)
 
-        result_labels = [f"{i+1}. {item.get('title', '')}" for i, item in enumerate(st.session_state.search_results)]
+        max_score = scored[0]["ציון_נרטיב"] if scored else 0
+        col_filter, col_info = st.columns([2, 1])
+        with col_filter:
+            min_score = st.slider(
+                "הצג רק תוצאות עם ציון נרטיב מינימלי",
+                min_value=0,
+                max_value=max(max_score, 1),
+                value=0,
+                help="הזזה ימינה מסננת תוצאות פחות נרטיביות",
+            )
+        with col_info:
+            visible = sum(1 for r in scored if r["ציון_נרטיב"] >= min_score)
+            st.metric("תוצאות מוצגות", f"{visible}/{len(scored)}")
+
+        visible_scored = [r for r in scored if r["ציון_נרטיב"] >= min_score]
+
+        st.markdown("### תוצאות החיפוש")
+        if not visible_scored:
+            st.info("אין תוצאות מעל הציון המינימלי. הזז את המחוון שמאלה.")
+        for i, row in enumerate(visible_scored):
+            score = row.get("ציון_נרטיב", 0)
+            stars = "★" * min(score, 5) + "☆" * max(0, 5 - score)
+            label = "גבוהה" if score >= 5 else ("בינונית" if score >= 2 else "נמוכה")
+            # Highlight top-scoring results
+            prefix = "🏆 " if score == max_score and max_score > 0 else ""
+            with st.expander(f"{prefix}{stars}  {i + 1}. {row.get('title', '')}  |  רלוונטיות: {label}"):
+                st.write(row.get("snippet", ""))
+                st.caption(f"מקור: {row.get('דומיין', '')} | סוג: {row.get('source_type', '')} | ציון: {score}")
+                if row.get("source_url"):
+                    st.link_button("פתח מקור", row["source_url"])
+
+        # Auto-select top-scored from visible results for analysis
+        if visible_scored:
+            top_score = visible_scored[0]["ציון_נרטיב"]
+            auto_selected = [
+                st.session_state.search_results.index(r)
+                for r in visible_scored
+                if r["ציון_נרטיב"] >= max(top_score, 3)
+                and r in st.session_state.search_results
+            ]
+            if auto_selected and st.session_state.selected_search_indices != auto_selected:
+                st.session_state.selected_search_indices = auto_selected
+
+        st.divider()
+        st.subheader("שלב 2: בחר מקורות לניתוח פולקלוריסטי")
+        result_labels = [f"{i + 1}. {item.get('title', '')}" for i, item in enumerate(st.session_state.search_results)]
         selected_indices = st.multiselect(
             "בחר תוצאות לניתוח",
             options=list(range(len(result_labels))),
-            format_func=lambda index: result_labels[index],
+            format_func=lambda idx: result_labels[idx],
             default=st.session_state.selected_search_indices,
             key="selected_search_indices",
         )
 
-        if st.button("אמת מקורות ונתח", use_container_width=True):
+        if st.button("נתח מקורות נבחרים", use_container_width=True, type="primary"):
             if not selected_indices:
                 st.warning("בחר לפחות תוצאה אחת לניתוח.")
             else:
                 chosen_items = [st.session_state.search_results[i] for i in selected_indices]
-                try:
-                    with st.spinner(f"מביא תוכן מ-{len(chosen_items)} מקורות ומריץ ניתוח פולקלוריסטי..."):
-                        preview_texts = []
-                        for item in chosen_items:
-                            url = item.get("source_url", "")
-                            snippet = item.get("snippet", "")
-                            if url:
-                                source_text = fetch_source_page_text(url)
-                                if not source_text:
-                                    source_text = snippet
-                            else:
-                                source_text = snippet
-                            st.session_state.search_source_texts[url] = source_text
-                            preview_texts.append(
-                                f"{item.get('title', '')}\n{snippet}\n{url}\n{source_text[:2000]}"
-                            )
-                        combined_text = "\n\n---\n\n".join(preview_texts)
-                        st.session_state.search_analysis = analyze_text(
-                            combined_text,
-                            title=query,
-                            source_url=chosen_items[0].get("source_url", ""),
-                            source_type=chosen_items[0].get("source_type", "עיתונות"),
+                all_results = []
+                progress_bar = st.progress(0, text="מתחיל ניתוח...")
+                for step, item in enumerate(chosen_items):
+                    item_title = item.get("title", "")
+                    progress_bar.progress(step / len(chosen_items), text=f"מנתח {step + 1}/{len(chosen_items)}: {item_title[:45]}...")
+                    url = item.get("source_url", "")
+                    snippet = item.get("snippet", "")
+                    source_text = fetch_source_page_text(url) if url else snippet
+                    if not source_text:
+                        source_text = snippet
+                    st.session_state.search_source_texts[url] = source_text
+                    st.session_state.search_source_titles[url] = item_title
+                    text_for_analysis = f"{item_title}\n{snippet}\n{source_text[:1200]}"
+                    try:
+                        results = analyze_text(
+                            text_for_analysis,
+                            title=item_title,
+                            source_url=url,
+                            source_type=item.get("source_type", "עיתונות"),
                         )
-                    add_to_history("חיפוש: " + query, combined_text, st.session_state.search_analysis)
-                except Exception as exc:
-                    st.error(f"שגיאה בניתוח: {exc}")
+                        all_results.extend(results)
+                    except Exception as item_exc:
+                        msg = str(item_exc)
+                        if "429" in msg or "Rate limit" in msg:
+                            wait = _parse_retry_seconds(msg)
+                            wait_str = f"{wait // 60} דקות ו-{wait % 60} שניות" if wait >= 60 else f"{wait} שניות"
+                            st.error(f"הגעת לגבול הטוקנים היומי של Groq. המתן {wait_str} ונסה שוב." if wait else "הגעת לגבול Groq. נסה שוב מאוחר יותר.")
+                            break
+                        elif "413" in msg or "too large" in msg.lower():
+                            st.warning(f"מקור '{item_title[:40]}' ארוך מדי — דולג.")
+                        else:
+                            st.warning(f"שגיאה במקור '{item_title[:40]}': {item_exc}")
+                    else:
+                        if step < len(chosen_items) - 1:
+                            time.sleep(1.5)
+                progress_bar.progress(1.0, text="הניתוח הושלם!")
+                if all_results:
+                    st.session_state.search_analysis = all_results
+                    add_to_history("חיפוש: " + query, "; ".join(i.get("title", "") for i in chosen_items), all_results)
+                    st.success(f"נותחו {len(all_results)} מקורות בהצלחה.")
+                else:
+                    st.error("לא ניתן לנתח אף מקור. נסה שאילתה אחרת.")
 
         if st.session_state.search_source_texts:
             st.subheader("סיכומי מקורות שנבדקו")
             for url, text_preview in st.session_state.search_source_texts.items():
                 if not url:
                     continue
-                with st.expander(url):
+                title_label = st.session_state.search_source_titles.get(url, url)
+                with st.expander(f"מקור: {title_label}"):
                     st.write(text_preview[:3000] if text_preview else "לא ניתן למשוך תוכן מהמקור.")
 
     if st.session_state.search_analysis:
@@ -502,22 +847,21 @@ def render_manual_tab():
         height=280,
         placeholder="הדבק כאן עדות, כתבה, פוסט ברשת חברתית, קטע מספר, או כל טקסט אחר...",
     )
-    if st.button("נתח טקסט", use_container_width=True):
+    if st.button("נתח טקסט", use_container_width=True, type="primary"):
         if not text.strip():
             st.warning("הזן טקסט בעברית לפני ניתוח.")
             return
         try:
             with st.spinner("מריץ את המודל ומייצר JSON מובנה..."):
-                analysis = analyze_text(
-                    text,
-                    title=title or None,
-                    source_url=source_url or None,
-                    source_type=source_type,
-                )
+                analysis = analyze_text(text, title=title or None, source_url=source_url or None, source_type=source_type)
             add_to_history("הזנה ידנית", text, analysis)
-            render_analysis_results(analysis, "ניתוח_ידני")
+            st.session_state.manual_analysis = analysis
+            st.success("הניתוח הושלם — ראה תוצאות למטה.")
         except Exception as exc:
             st.error(f"שגיאה: {exc}")
+
+    if st.session_state.get("manual_analysis"):
+        render_analysis_results(st.session_state.manual_analysis, "ניתוח_ידני")
 
 
 def render_history_tab():
@@ -526,22 +870,23 @@ def render_history_tab():
         st.info("עדיין לא בוצעו ניתוחים בפגישה זו.")
         return
 
-    all_analyses = []
+    all_analyses = [a for entry in st.session_state.history for a in entry["analysis"]]
+    render_history_summary(all_analyses)
+
+    st.divider()
     for i, entry in enumerate(reversed(st.session_state.history)):
         idx = len(st.session_state.history) - i
         with st.expander(f"#{idx} — {entry['source']}"):
             st.caption(entry["text_preview"])
             render_analysis_results(entry["analysis"], f"ניתוח_{idx}")
-        all_analyses.extend(entry["analysis"])
 
     st.divider()
     st.subheader("ייצוא כל הניתוחים")
     col1, col2 = st.columns(2)
     with col1:
-        df_all = json_to_dataframe(all_analyses)
         st.download_button(
             label="הורד הכל כ-CSV",
-            data=df_all.to_csv(index=False, encoding="utf-8-sig"),
+            data=json_to_dataframe(all_analyses).to_csv(index=False).encode("utf-8-sig"),
             file_name="כל_הניתוחים.csv",
             mime="text/csv",
             use_container_width=True,
@@ -554,27 +899,27 @@ def render_history_tab():
             mime="application/json",
             use_container_width=True,
         )
-
     st.divider()
     if st.button("נקה היסטוריה", type="secondary"):
         st.session_state.history = []
         st.session_state.search_results = None
         st.session_state.search_analysis = None
+        st.session_state.manual_analysis = None
         st.rerun()
 
 
 def main():
     st.set_page_config(
-        page_title="כלי מחקר DH — פולקלור ו-7 באוקטובר",
+        page_title="מחקר פולקלור — 7 באוקטובר 2023",
         layout="wide",
         page_icon="📖",
+        initial_sidebar_state="collapsed",
     )
     init_session_state()
 
     st.title("כלי מחקר דיגיטלי לפולקלור ומלחמת חרבות ברזל")
-    st.markdown(
-        "כלי לבדיקת נרטיבים מה-7 באוקטובר, איתור מקורות ברשת וניתוח מבני של סיפור, מוטיבים ותאריכים."
-    )
+    st.markdown("כלי לבדיקת נרטיבים מה-7 באוקטובר, איתור מקורות ברשת וניתוח מבני של סיפור, מוטיבים ותאריכים.")
+    st.caption(f"סשן נוכחי: {len(st.session_state.history)} ניתוחים | מודל: {GROQ_MODEL}")
 
     tabs = st.tabs([
         "חיפוש אוטומטי",
@@ -587,19 +932,6 @@ def main():
         render_manual_tab()
     with tabs[2]:
         render_history_tab()
-
-    with st.sidebar:
-        st.header("קונפיגורציה")
-        st.markdown("**סטטוס מפתחות API:**")
-        for key, value in [("GROQ_API_KEY", GROQ_API_KEY), ("SEARCH_API_KEY", SEARCH_API_KEY)]:
-            icon = "✅" if value else "❌"
-            st.markdown(f"{icon} `{key}`")
-        st.divider()
-        st.markdown(f"**מודל:** `{GROQ_MODEL}`")
-        active_engine = SEARCH_ENGINE if SEARCH_API_KEY else "duckduckgo (חינמי)"
-        st.markdown(f"**מנוע חיפוש:** `{active_engine}`")
-        st.divider()
-        st.markdown("הגדר מפתחות ב-`.env` לפי `.env.example`.")
 
 
 if __name__ == "__main__":

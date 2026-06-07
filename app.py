@@ -329,18 +329,50 @@ def _ddg_news(query: str, max_results: int) -> list:
         return list(ddgs.news(query, region="wt-wt", max_results=max_results))
 
 
-_OCT7_CONTEXT = '("7 באוקטובר" OR "שבעה באוקטובר" OR "חרבות ברזל" OR "שמחת תורה 2023")'
+_OCT7_CONTEXT_PHRASES = ['"7 באוקטובר"', '"חרבות ברזל"', '"שמחת תורה 2023"', '"שבעה באוקטובר"']
+
+_HEBREW_STOPWORDS = {
+    "של", "עם", "על", "אל", "כל", "גם", "רק", "את", "או", "אבל", "כי",
+    "מה", "לא", "זה", "זו", "יש", "אין", "אני", "הוא", "היא", "הם",
+}
 
 
-def _anchor_query(query: str) -> str:
-    """Anchor a free-text query to the Oct 7 / Iron Swords context so generic
-    terms (e.g. "ציצית") return results connected to the war, not the term in general."""
-    if any(term.strip('"') in query for term in ["7 באוקטובר", "שבעה באוקטובר", "חרבות ברזל", "שמחת תורה"]):
+def _is_anchored(query: str) -> bool:
+    return any(p.strip('"') in query for p in _OCT7_CONTEXT_PHRASES)
+
+
+def _anchor_query(query: str, phrase_idx: int = 0) -> str:
+    """Anchor a free-text query to the Oct 7 / Iron Swords context with ONE quoted
+    phrase (DuckDuckGo handles quoted phrases reliably; OR/parentheses groups are not)."""
+    if _is_anchored(query):
         return query
-    return f"{query} {_OCT7_CONTEXT}"
+    phrase = _OCT7_CONTEXT_PHRASES[phrase_idx % len(_OCT7_CONTEXT_PHRASES)]
+    return f"{query} {phrase}"
+
+
+def _query_terms(query: str) -> list:
+    """Extract the meaningful words of the user's original query (for post-filtering),
+    ignoring stopwords, boolean operators, and quote characters."""
+    words = [w.strip('"().,?!') for w in query.split()]
+    return [w for w in words if len(w) > 1 and w.upper() not in ("OR", "AND") and w not in _HEBREW_STOPWORDS]
+
+
+def _mentions_terms(item: dict, terms: list) -> bool:
+    if not terms:
+        return True
+    text = item.get("title", "") + " " + item.get("snippet", "")
+    return any(t in text for t in terms)
+
+
+def _filter_by_query(items: list, terms: list) -> list:
+    """Keep only results that actually mention the user's search terms — otherwise
+    a generic word like "ציצית" can return Oct-7-related pages that never say it."""
+    filtered = [it for it in items if _mentions_terms(it, terms)]
+    return filtered if filtered else items
 
 
 def _search_ddg_social(query: str, max_results: int) -> list:
+    terms = _query_terms(query)
     query = _anchor_query(query)
     all_results = []
     per_site = max(2, (max_results // len(SOCIAL_MEDIA_SITES)) + 1)
@@ -355,10 +387,11 @@ def _search_ddg_social(query: str, max_results: int) -> list:
                 })
         except Exception:
             continue
-    return all_results[:max_results]
+    return _filter_by_query(all_results, terms)[:max_results]
 
 
 def _search_ddg_testimony_archives(query: str, max_results: int) -> list:
+    terms = _query_terms(query)
     query = _anchor_query(query)
     all_results = []
     per_site = max(3, (max_results // len(TESTIMONY_ARCHIVE_SITES)) + 1)
@@ -373,7 +406,7 @@ def _search_ddg_testimony_archives(query: str, max_results: int) -> list:
                 })
         except Exception:
             continue
-    return all_results[:max_results]
+    return _filter_by_query(all_results, terms)[:max_results]
 
 
 _STORY_TERMS = "עדות OR סיפר OR מספרת OR ניצול OR בריחה"
@@ -397,32 +430,56 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
         return _search_ddg_social(query, max_results)
     if search_mode == "testimony":
         return _search_ddg_testimony_archives(query, max_results)
-    query = _anchor_query(query)
+
+    terms = _query_terms(query)
+    already_anchored = _is_anchored(query)
+    n_phrases = 1 if already_anchored else len(_OCT7_CONTEXT_PHRASES)
+
     if search_mode == "news":
+        for idx in range(n_phrases):
+            anchored = query if already_anchored else _anchor_query(query, idx)
+            try:
+                items = _to_items_news(_ddg_news(anchored, max_results + 3))
+                filtered = [it for it in items if _mentions_terms(it, terms)]
+                if filtered:
+                    return filtered[:max_results]
+            except Exception:
+                continue
+        return []
+
+    # web/story mode: try each context phrase + narrative terms, keep results that
+    # actually mention the user's search words, post-filter encyclopedias
+    for idx in range(n_phrases):
+        anchored = query if already_anchored else _anchor_query(query, idx)
+        story_query = f"{anchored} {_STORY_TERMS}"
         try:
-            return _to_items_news(_ddg_news(query, max_results))
+            raw = _ddg_text(story_query, max_results + 5)
+            items = _to_items_text(raw, "href")
+            filtered = [it for it in items if _mentions_terms(it, terms)]
+            if filtered:
+                return filtered[:max_results]
         except Exception:
             pass
-        return []
-    # web/story mode: add narrative terms, post-filter encyclopedias
-    story_query = f"{query} {_STORY_TERMS}"
+        try:
+            raw = _ddg_text(anchored, max_results + 5)
+            items = _to_items_text(raw, "href")
+            filtered = [it for it in items if _mentions_terms(it, terms)]
+            if filtered:
+                return filtered[:max_results]
+        except Exception:
+            pass
+
+    # last resort: anchored query without requiring the search term to appear
+    anchored = query if already_anchored else _anchor_query(query, 0)
     try:
-        raw = _ddg_text(story_query, max_results + 3)
+        raw = _ddg_text(f"{anchored} {_STORY_TERMS}", max_results + 3)
         items = _to_items_text(raw, "href")
         if items:
             return items[:max_results]
     except Exception:
         pass
-    # fallback: anchored query without narrative terms, still post-filter
     try:
-        raw = _ddg_text(query, max_results + 3)
-        items = _to_items_text(raw, "href")
-        if items:
-            return items[:max_results]
-    except Exception:
-        pass
-    try:
-        return _to_items_news(_ddg_news(query, max_results))
+        return _to_items_news(_ddg_news(anchored, max_results))
     except Exception:
         pass
     return []

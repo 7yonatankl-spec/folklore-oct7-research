@@ -436,9 +436,10 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
     n_phrases = 1 if already_anchored else len(_OCT7_CONTEXT_PHRASES)
 
     def _collect(query_variants, to_items_fn, ddg_fn):
-        """Run several query variants, merge & dedupe by URL, keep ones that
-        mention the user's search terms. Keeps searching across all variants
-        instead of stopping at the first one that yields a single hit."""
+        """Run every query variant (deep search — does not stop at the first hit),
+        merge & dedupe by URL, then rank: results that mention the user's search
+        terms come first, sorted by narrative score so genuine testimonies surface
+        above generic mentions of the same word."""
         seen_urls, matched, unmatched = set(), [], []
         for q in query_variants:
             try:
@@ -451,9 +452,12 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
                     continue
                 seen_urls.add(url)
                 (matched if _mentions_terms(it, terms) else unmatched).append(it)
-            if len(matched) >= max_results:
-                break
+        rank_key = lambda it: narrative_score(it.get("title", "") + " " + it.get("snippet", ""))
+        matched.sort(key=rank_key, reverse=True)
+        unmatched.sort(key=rank_key, reverse=True)
         return (matched + unmatched) if matched else unmatched
+
+    deep_fetch = max(max_results * 2, 15)
 
     if search_mode == "news":
         variants = [
@@ -463,7 +467,7 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
         results = _collect(
             variants,
             _to_items_news,
-            lambda q: _ddg_news(q, max_results + 5),
+            lambda q: _ddg_news(q, deep_fetch),
         )
         return results[:max_results]
 
@@ -477,7 +481,7 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
     results = _collect(
         variants,
         lambda raw: _to_items_text(raw, "href"),
-        lambda q: _ddg_text(q, max_results + 5),
+        lambda q: _ddg_text(q, deep_fetch),
     )
     if results:
         return results[:max_results]

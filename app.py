@@ -435,49 +435,54 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
     already_anchored = _is_anchored(query)
     n_phrases = 1 if already_anchored else len(_OCT7_CONTEXT_PHRASES)
 
-    if search_mode == "news":
-        for idx in range(n_phrases):
-            anchored = query if already_anchored else _anchor_query(query, idx)
+    def _collect(query_variants, to_items_fn, ddg_fn):
+        """Run several query variants, merge & dedupe by URL, keep ones that
+        mention the user's search terms. Keeps searching across all variants
+        instead of stopping at the first one that yields a single hit."""
+        seen_urls, matched, unmatched = set(), [], []
+        for q in query_variants:
             try:
-                items = _to_items_news(_ddg_news(anchored, max_results + 3))
-                filtered = [it for it in items if _mentions_terms(it, terms)]
-                if filtered:
-                    return filtered[:max_results]
+                items = to_items_fn(ddg_fn(q))
             except Exception:
                 continue
-        return []
+            for it in items:
+                url = it.get("source_url", "")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                (matched if _mentions_terms(it, terms) else unmatched).append(it)
+            if len(matched) >= max_results:
+                break
+        return (matched + unmatched) if matched else unmatched
 
-    # web/story mode: try each context phrase + narrative terms, keep results that
-    # actually mention the user's search words, post-filter encyclopedias
+    if search_mode == "news":
+        variants = [
+            (query if already_anchored else _anchor_query(query, idx))
+            for idx in range(n_phrases)
+        ]
+        results = _collect(
+            variants,
+            _to_items_news,
+            lambda q: _ddg_news(q, max_results + 5),
+        )
+        return results[:max_results]
+
+    # web/story mode: try every context phrase (+ narrative terms), merge & dedupe,
+    # keep results that actually mention the user's search words, post-filter encyclopedias
+    variants = []
     for idx in range(n_phrases):
         anchored = query if already_anchored else _anchor_query(query, idx)
-        story_query = f"{anchored} {_STORY_TERMS}"
-        try:
-            raw = _ddg_text(story_query, max_results + 5)
-            items = _to_items_text(raw, "href")
-            filtered = [it for it in items if _mentions_terms(it, terms)]
-            if filtered:
-                return filtered[:max_results]
-        except Exception:
-            pass
-        try:
-            raw = _ddg_text(anchored, max_results + 5)
-            items = _to_items_text(raw, "href")
-            filtered = [it for it in items if _mentions_terms(it, terms)]
-            if filtered:
-                return filtered[:max_results]
-        except Exception:
-            pass
+        variants.append(f"{anchored} {_STORY_TERMS}")
+        variants.append(anchored)
+    results = _collect(
+        variants,
+        lambda raw: _to_items_text(raw, "href"),
+        lambda q: _ddg_text(q, max_results + 5),
+    )
+    if results:
+        return results[:max_results]
 
-    # last resort: anchored query without requiring the search term to appear
     anchored = query if already_anchored else _anchor_query(query, 0)
-    try:
-        raw = _ddg_text(f"{anchored} {_STORY_TERMS}", max_results + 3)
-        items = _to_items_text(raw, "href")
-        if items:
-            return items[:max_results]
-    except Exception:
-        pass
     try:
         return _to_items_news(_ddg_news(anchored, max_results))
     except Exception:

@@ -329,7 +329,19 @@ def _ddg_news(query: str, max_results: int) -> list:
         return list(ddgs.news(query, region="wt-wt", max_results=max_results))
 
 
+_OCT7_CONTEXT = '("7 באוקטובר" OR "שבעה באוקטובר" OR "חרבות ברזל" OR "שמחת תורה 2023")'
+
+
+def _anchor_query(query: str) -> str:
+    """Anchor a free-text query to the Oct 7 / Iron Swords context so generic
+    terms (e.g. "ציצית") return results connected to the war, not the term in general."""
+    if any(term.strip('"') in query for term in ["7 באוקטובר", "שבעה באוקטובר", "חרבות ברזל", "שמחת תורה"]):
+        return query
+    return f"{query} {_OCT7_CONTEXT}"
+
+
 def _search_ddg_social(query: str, max_results: int) -> list:
+    query = _anchor_query(query)
     all_results = []
     per_site = max(2, (max_results // len(SOCIAL_MEDIA_SITES)) + 1)
     for site, source_type in SOCIAL_MEDIA_SITES:
@@ -347,6 +359,7 @@ def _search_ddg_social(query: str, max_results: int) -> list:
 
 
 def _search_ddg_testimony_archives(query: str, max_results: int) -> list:
+    query = _anchor_query(query)
     all_results = []
     per_site = max(3, (max_results // len(TESTIMONY_ARCHIVE_SITES)) + 1)
     for site, source_type in TESTIMONY_ARCHIVE_SITES:
@@ -384,6 +397,7 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
         return _search_ddg_social(query, max_results)
     if search_mode == "testimony":
         return _search_ddg_testimony_archives(query, max_results)
+    query = _anchor_query(query)
     if search_mode == "news":
         try:
             return _to_items_news(_ddg_news(query, max_results))
@@ -399,7 +413,7 @@ def _search_ddg(query: str, max_results: int, search_mode: str) -> list:
             return items[:max_results]
     except Exception:
         pass
-    # fallback: plain query, still post-filter
+    # fallback: anchored query without narrative terms, still post-filter
     try:
         raw = _ddg_text(query, max_results + 3)
         items = _to_items_text(raw, "href")

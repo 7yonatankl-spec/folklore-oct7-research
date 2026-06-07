@@ -547,6 +547,36 @@ def add_to_history(source: str, text_preview: str, analysis: list):
     })
 
 
+def _render_read_aloud(text: str):
+    """Accessibility: read text aloud via the browser's built-in speech synthesis
+    (no API key, works offline, supports Hebrew on modern browsers)."""
+    if not text:
+        return
+    import streamlit.components.v1 as components
+    payload = json.dumps(text)
+    components.html(f"""
+    <div style="direction:rtl; font-family:'Segoe UI',Arial,sans-serif; display:flex; gap:8px;">
+      <button id="read-btn" style="background:#2563eb;color:white;border:none;border-radius:8px;
+        padding:6px 16px;cursor:pointer;font-weight:600;font-size:0.85rem;">🔊 הקרא בקול</button>
+      <button id="stop-btn" style="background:#64748b;color:white;border:none;border-radius:8px;
+        padding:6px 16px;cursor:pointer;font-weight:600;font-size:0.85rem;">⏹ עצור</button>
+    </div>
+    <script>
+      const _text = {payload};
+      document.getElementById('read-btn').onclick = function() {{
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(_text);
+        u.lang = 'he-IL';
+        u.rate = 0.95;
+        window.speechSynthesis.speak(u);
+      }};
+      document.getElementById('stop-btn').onclick = function() {{
+        window.speechSynthesis.cancel();
+      }};
+    </script>
+    """, height=44)
+
+
 def _render_item_card(item: dict):
     with st.container(border=True):
         st.markdown(f"### {item.get('title', 'ללא כותרת')}")
@@ -566,6 +596,7 @@ def _render_item_card(item: dict):
         summary = item.get("narrative_summary", "")
         if summary:
             st.write(summary)
+            _render_read_aloud(summary)
 
         motifs = item.get("motifs", [])
         if isinstance(motifs, list) and motifs:
@@ -1135,8 +1166,46 @@ def _inject_css():
     [data-testid="stSlider"] { direction: ltr; }
     [data-testid="stSlider"] [data-baseweb="slider"] { direction: ltr; }
     [data-testid="stSliderThumbValue"] { direction: ltr; }
+
+    /* ── Accessibility: visible keyboard-focus outline (Israeli accessibility regs) ── */
+    *:focus-visible {
+        outline: 3px solid #2563eb !important;
+        outline-offset: 2px;
+    }
     </style>
     """, unsafe_allow_html=True)
+
+
+def _render_accessibility_statement():
+    with st.expander("♿ הצהרת נגישות"):
+        st.markdown(
+            "אתר זה פועל למתן שירות נגיש ושוויוני לכלל הגולשים, בהתאם לתקנות שוויון "
+            "זכויות לאנשים עם מוגבלות (התאמות נגישות לשירות), תשע\"ג-2013, ועקרונות "
+            "התקן הישראלי 5568 ברמת התאמה AA (המבוסס על WCAG 2.0).\n\n"
+            "**התאמות הנגישות הקיימות באתר:**\n"
+            "- ממשק מלא בכיווניות עברית (RTL) עם מבנה כותרות היררכי לניווט בעזרת קוראי מסך\n"
+            "- ניגודיות צבעים גבוהה בין טקסט לרקע\n"
+            "- מתאר מיקוד (focus) ברור לניווט מקלדת בכל הרכיבים\n"
+            "- כפתור הקראה קולית (Text-to-Speech) לתקצירי ניתוח, מבוסס על מנוע ההקראה המובנה בדפדפן\n\n"
+            "**נתקלת בבעיית נגישות?** ניתן לפנות למפעיל האתר בכתובת המייל המופיעה בפרטי הקשר של הפרויקט, "
+            "ואנו נפעל לתיקון בהקדם האפשרי."
+        )
+
+
+def _render_legal_disclaimer():
+    with st.expander("⚖️ הצהרה משפטית ושימוש הוגן"):
+        st.markdown(
+            "**מטרת הכלי:** כלי זה משמש למחקר אקדמי בתחום הפולקלור והנרטיבים העממיים "
+            "מה-7 באוקטובר 2023, בהתאם לעקרון \"שימוש הוגן\" הקבוע בסעיף 19 לחוק זכות "
+            "יוצרים, התשס\"ח-2007, המתיר שימוש ביצירות מוגנות למטרות מחקר, ביקורת, "
+            "סקירה והוראה.\n\n"
+            "**עקרונות הפעולה:**\n"
+            "- הכלי מציג קטעי טקסט מצוטטים לצורכי ניתוח וקישור למקור המקורי בלבד — אינו מעתיק או מפיץ יצירות במלואן\n"
+            "- כל תוצאה כוללת קישור ישיר למקור (\"פתח מקור\") לעיון בהקשרו המלא\n"
+            "- הכלי אינו טוען לבעלות על תוכן צד שלישי המוצג בו, ואינו מהווה תחליף לעיון במקור\n\n"
+            "**אחריות המשתמש:** על המשתמש לוודא כי כל שימוש נוסף בתכנים המוצגים (פרסום, ציטוט "
+            "במחקר, הפצה) נעשה בהתאם לדין, לכללי האזכור האקדמי המקובלים ותוך מתן קרדיט למקור המקורי."
+        )
 
 
 def main():
@@ -1164,6 +1233,13 @@ def main():
         render_manual_tab()
     with tabs[2]:
         render_history_tab()
+
+    st.divider()
+    col_a11y, col_legal = st.columns(2)
+    with col_a11y:
+        _render_accessibility_statement()
+    with col_legal:
+        _render_legal_disclaimer()
 
 
 if __name__ == "__main__":
